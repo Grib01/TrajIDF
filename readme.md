@@ -72,7 +72,10 @@ Lors des tests finaux sur le jeu de validation, le modèle combiné a atteint le
 * **Erreur quadratique moyenne (RMSE)** : 2,4 minutes
 * **Coefficient de détermination (R²)** : 0,88
 
-Après calibration isotonique, le RMSE est passé de 2,4 à 2,1 minutes et le MAE de 1,7 à 1,5 minute, attestant de l’efficacité de l’ajustement post‑prédiction.## Installation et exécution
+Après calibration isotonique, le RMSE est passé de 2,4 à 2,1 minutes et le MAE de 1,7 à 1,5 minute, attestant de l’efficacité de l’ajustement post‑prédiction.
+
+## Installation et exécution
+
 Pour installer les dépendances :
 
 ```bash
