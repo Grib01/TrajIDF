@@ -29,22 +29,12 @@ import pickle
 
 warnings.filterwarnings('ignore')
 
-# ========================================
-# CONFIG
-# ========================================
-print("=" * 60)
-print("PROJET ML - PRÉDICTION DU TRAFIC EN ÎLE-DE-FRANCE")
-print("=" * 60)
-
-# params globaux
 PARIS_DATA_API = "https://opendata.paris.fr/api/records/1.0/search/"
 SYTADIN_BASE = 'https://www.sytadin.fr/diffusion'
 
-# codes dept + bbox
 DEPARTEMENTS_IDF = ['75', '77', '78', '91', '92', '93', '94', '95']
 VIEWBOX_IDF = ((48.12, 1.45), (49.24, 3.56))
 
-# villes principales (pas exhaustif)
 COMMUNES_IDF = {
     'Paris', 'Boulogne-Billancourt', 'Saint-Denis', 'Argenteuil',
     'Montreuil', 'Nanterre', 'Vitry-sur-Seine', 'Créteil',
@@ -64,26 +54,19 @@ COMMUNES_IDF = {
     'Savigny-sur-Orge', 'Viry-Châtillon', 'Yerres', 'Corbeil-Essonnes'
 }
 
-# ========================================
-# GEOCODAGE
-# ========================================
 
 def geocoder_adresse_idf(adresse):
-    """Geocode une adresse avec restriction IDF"""
     geolocator = Nominatim(user_agent="traffic_predictor_idf_m2")
     
     def nettoyer_commune(nom):
-        """normalize nom ville"""
         return nom.strip().replace('-', ' ').lower()
     
     def extraire_commune(adresse):
-        """extrait ville de l'adresse si possible"""
         if ',' in adresse:
             parties = adresse.split(',')
             return parties[-1].strip()
         return None
     
-    # tentative 1: avec viewbox
     try:
         location = geolocator.geocode(
             adresse,
@@ -94,7 +77,6 @@ def geocoder_adresse_idf(adresse):
         )
         
         if location:
-            # check si vraiment en IDF
             lat, lon = location.latitude, location.longitude
             if (VIEWBOX_IDF[0][0] <= lat <= VIEWBOX_IDF[1][0] and 
                 VIEWBOX_IDF[0][1] <= lon <= VIEWBOX_IDF[1][1]):
@@ -102,19 +84,17 @@ def geocoder_adresse_idf(adresse):
                 return (lat, lon)
     except Exception as e:
         print(f"Erreur géocodage tentative 1: {e}")
-    
-    # tentative 2: check commune
     commune = extraire_commune(adresse)
     if commune:
         commune_norm = nettoyer_commune(commune)
         
-        # verif si commune dans liste
+        
         for commune_idf in COMMUNES_IDF:
             if nettoyer_commune(commune_idf) == commune_norm:
-                # retry avec commune explicite
+                
                 adresse_complete = f"{adresse}, Île-de-France, France"
                 try:
-                    time.sleep(1)  # rate limit
+                    time.sleep(1)  
                     location = geolocator.geocode(
                         adresse_complete,
                         viewbox=VIEWBOX_IDF,
@@ -127,7 +107,7 @@ def geocoder_adresse_idf(adresse):
                 except:
                     pass
     
-    # tentative 3: ajout IDF
+    
     if "île-de-france" not in adresse.lower() and "ile de france" not in adresse.lower():
         adresse_idf = f"{adresse}, Île-de-France, France"
         try:
@@ -153,12 +133,8 @@ def geocoder_adresse_idf(adresse):
     print("   92 (Hauts-de-Seine), 93 (Seine-Saint-Denis), 94 (Val-de-Marne), 95 (Val-d'Oise)")
     return None
 
-# ========================================
-# CHARGEMENT DATA
-# ========================================
-
 def charger_comptages_routiers(nombre_lignes=10000, filtre_date=None):
-    """recup data comptage depuis opendata paris"""
+    
     print(f"\n[1/6] Chargement des données de comptage routier ({nombre_lignes} lignes)...")
     
     tous_les_enregistrements = []
@@ -171,7 +147,7 @@ def charger_comptages_routiers(nombre_lignes=10000, filtre_date=None):
             "start": debut
         }
         
-        # filtre date si demandé
+        
         if filtre_date:
             params["q"] = f"t_1h:{filtre_date}*"
         
@@ -202,10 +178,10 @@ def charger_comptages_routiers(nombre_lignes=10000, filtre_date=None):
         print("  Aucune donnée chargée depuis l'API")
         return pd.DataFrame()
     
-    # conversion df
+  
     df = pd.json_normalize(tous_les_enregistrements)
     
-    # rename colonnes
+    
     colonnes_mapping = {
         "fields.t_1h": "datetime_str",
         "fields.iu_ac": "identifiant_arc",
@@ -217,7 +193,7 @@ def charger_comptages_routiers(nombre_lignes=10000, filtre_date=None):
         if old_col in df.columns:
             df[new_col] = df[old_col]
     
-    # traitement dates
+    
     if 'datetime_str' in df.columns:
         df["datetime"] = pd.to_datetime(df["datetime_str"], errors='coerce')
         df = df.dropna(subset=['datetime'])
@@ -226,25 +202,25 @@ def charger_comptages_routiers(nombre_lignes=10000, filtre_date=None):
         df["date"] = df["datetime"].dt.date
         df["minute"] = df["datetime"].dt.minute
     
-    # calcul vitesse
+    
     if 'occupation' in df.columns and 'debit' in df.columns:
         df["occupation"] = pd.to_numeric(df["occupation"], errors='coerce')
         df["debit"] = pd.to_numeric(df["debit"], errors='coerce')
         
-        # calcul vitesse adaptée contexte urbain
+       
         def calculer_vitesse_realiste(row):
             if row["occupation"] > 0 and row["debit"] > 0:
-                # formule empirique
+               
                 vitesse_base = (row["debit"] / row["occupation"]) * 1.8
                 
-                # ajustement rush hour
+               
                 if row["heure"] in [7,8,9,17,18,19] and row["jour_semaine"] < 5:
                     vitesse_base *= 0.7
                 
-                # bornes realistes
+              
                 return np.clip(vitesse_base, 5, 90)
             else:
-                # defaut selon heure
+               
                 if row["heure"] in [7,8,9,17,18,19] and row["jour_semaine"] < 5:
                     return 25
                 else:
@@ -292,21 +268,21 @@ def charger_referentiel_geographique():
         return pd.DataFrame()
 
 def charger_donnees_sytadin_enrichies():
-    # data temps reel sytadin
+  
     print("\n[2/6] Chargement des données Sytadin enrichies...")
     
     try:
-        # geometrie arcs
+      
         url_arcs = f"{SYTADIN_BASE}/mifmid/modelisation/Arc.mif"
         gdf_arcs = gpd.read_file(url_arcs)
         print(f"  ✓ {len(gdf_arcs)} arcs Sytadin chargés")
         
-        # temps parcours dyn
+      
         url_temps = f"{SYTADIN_BASE}/xml/arcs_dyn.xml"
         response = requests.get(url_temps)
         response.raise_for_status()
         
-        # parse xml
+     
         root = ET.fromstring(response.content)
         temps_parcours = []
         
@@ -329,7 +305,7 @@ def charger_donnees_sytadin_enrichies():
         df_temps = pd.DataFrame(temps_parcours)
         print(f"  ✓ {len(df_temps)} temps de parcours chargés")
         
-        # merge geo
+     
         gdf_arcs['ID_ARC'] = gdf_arcs['ID_ARC'].astype(str)
         gdf_sytadin = gdf_arcs.merge(df_temps, on='ID_ARC', how='left')
         
@@ -339,17 +315,14 @@ def charger_donnees_sytadin_enrichies():
         print(f"  Erreur Sytadin: {e}")
         return None
 
-# ========================================
-# GRAPHE ROUTIER
-# ========================================
 
 def construire_graphe_routier(region="Île-de-France, France"):
     """build graph avec cache local"""
     
-    # fichier cache
+
     cache_filename = "graphe_routier_idf.pkl"
     
-    # check cache
+
     if os.path.exists(cache_filename):
         print(f"\n Chargement du graphe routier depuis le cache...")
         try:
@@ -367,24 +340,24 @@ def construire_graphe_routier(region="Île-de-France, France"):
             print(f"  Erreur lors du chargement du cache: {e}")
             print("  → Téléchargement d'un nouveau graphe...")
     
-    # si pas cache, dl
+
     print(f"\n[3/6] Construction du graphe routier pour {region}...")
     print("   Cette opération peut prendre plusieurs minutes la première fois...")
     
     try:
-        # dl graphe IDF
+    
         G = ox.graph_from_place(region, network_type="drive", simplify=True)
         
-        # convert gdfs
+     
         nodes_gdf, edges_gdf = ox.graph_to_gdfs(G)
         
-        # add ids
+   
         edges_gdf = edges_gdf.reset_index()
         edges_gdf['edge_id'] = edges_gdf.index
         
         print(f"✓ Graphe construit: {len(nodes_gdf)} nœuds, {len(edges_gdf)} arêtes")
         
-        # save cache
+    
         print("   Sauvegarde du graphe dans le cache...")
         cache_data = {
             'graphe': G,
@@ -404,7 +377,7 @@ def construire_graphe_routier(region="Île-de-France, France"):
         print(f"Erreur lors de la construction du graphe: {e}")
         print("Tentative avec une zone plus restreinte...")
         
-        # fallback paris
+    
         G = ox.graph_from_place("Paris, France", network_type="drive")
         nodes_gdf, edges_gdf = ox.graph_to_gdfs(G)
         edges_gdf = edges_gdf.reset_index()
@@ -412,7 +385,7 @@ def construire_graphe_routier(region="Île-de-France, France"):
         
         print(f"✓ Graphe Paris construit: {len(nodes_gdf)} nœuds, {len(edges_gdf)} arêtes")
         
-        # save fallback
+   
         cache_data = {
             'graphe': G,
             'nodes': nodes_gdf,
@@ -426,36 +399,34 @@ def construire_graphe_routier(region="Île-de-France, France"):
         
         return G, nodes_gdf, edges_gdf
 
-# ========================================
-# NETTOYAGE DATA
-# ========================================
+
 
 def parse_lanes(x):
     """
     converti lanes en scalaire
     """
-    # valeurs manquantes
+ 
     if x is None:
         return 1.0
     
-    # gestion floats/nan
+ 
     if isinstance(x, float):
         if np.isnan(x):
             return 1.0
         else:
             return float(x)
     
-    # int direct
+
     if isinstance(x, (int, np.integer)):
         return float(x)
     
-    # uniformisation liste
+
     if isinstance(x, (list, tuple, np.ndarray)):
         tokens = [str(v) for v in x]
     else:
         tokens = re.split(r'[;,]', str(x))
     
-    # extract nums
+
     nums = []
     for token in tokens:
         try:
@@ -464,7 +435,7 @@ def parse_lanes(x):
         except (ValueError, AttributeError):
             continue
     
-    # moyenne si plusieurs valeurs
+
     if nums:
         return float(np.mean(nums))
     else:
@@ -472,10 +443,10 @@ def parse_lanes(x):
 
 def extraire_vitesse_max(x):
     """extrait vitesse max avec gestion arrays"""
-    # arrays
+
     if isinstance(x, (list, np.ndarray)):
         if len(x) > 0:
-            # premier elem valide
+         
             for val in x:
                 try:
                     return float(str(val).split()[0])
@@ -483,18 +454,18 @@ def extraire_vitesse_max(x):
                     continue
         return 50
     
-    # valeurs manquantes
+  
     try:
         if pd.isna(x):
-            return 50  # defaut ville
+            return 50  
     except:
-        # si pd.isna fail sur array
+   
         return 50
     
     if isinstance(x, (int, float)):
         return float(x)
     
-    # parse "50" ou "50 km/h"
+  
     try:
         return float(str(x).split()[0])
     except:
@@ -502,51 +473,49 @@ def extraire_vitesse_max(x):
 
 def detect_oneway(x):
     """detecte sens unique avec gestion arrays"""
-    # si sequence, cherche True ou 'yes'
+   
     if isinstance(x, (list, tuple, np.ndarray)):
         return int(any((val is True) or (str(val).lower() == 'yes') for val in x))
-    # scalaire
+ 
     return int((x is True) or (str(x).lower() == 'yes'))
 
 def to_bool_int(val):
     """bool to int quel que soit le type"""
     if isinstance(val, (list, tuple, np.ndarray)):
         return int(any((v is True) or (str(v).lower() == 'yes') for v in val))
-    # scalaires/strings
+  
     return int((val is True) or (str(val).lower() == 'yes'))
 
-# ========================================
-# MAPPING VITESSES
-# ========================================
+
 
 def mapper_vitesses_sur_graphe(donnees_vitesse, referentiel_geo, edges_gdf, donnees_sytadin=None):
     """associe vitesses aux edges"""
     print("\n[4/6] Association des vitesses au graphe...")
     
-    # si ref geo et data
+  
     if not referentiel_geo.empty and 'identifiant_arc' in donnees_vitesse.columns:
-        # merge vitesse + coords
+      
         donnees_avec_geo = donnees_vitesse.merge(
             referentiel_geo, 
             on='identifiant_arc', 
             how='left'
         )
         
-        # filtre avec coords
+      
         donnees_avec_geo = donnees_avec_geo.dropna(subset=['lat', 'lon'])
         
         if not donnees_avec_geo.empty:
-            # gdf pour points
+   
             gdf_comptages = gpd.GeoDataFrame(
                 donnees_avec_geo,
                 geometry=gpd.points_from_xy(donnees_avec_geo.lon, donnees_avec_geo.lat),
                 crs="EPSG:4326"
             )
             
-            # simplif edges pour join
+       
             edges_simple = edges_gdf[['edge_id', 'geometry']].copy()
             
-            # spatial join
+   
             correspondances = gpd.sjoin_nearest(
                 gdf_comptages, 
                 edges_simple, 
@@ -554,7 +523,7 @@ def mapper_vitesses_sur_graphe(donnees_vitesse, referentiel_geo, edges_gdf, donn
                 max_distance=0.002
             )
             
-            # agreg par edge/heure/jour
+          
             vitesses_par_arete = (
                 correspondances
                 .groupby(['edge_id', 'heure', 'jour_semaine'])['vitesse_kmh']
@@ -567,13 +536,13 @@ def mapper_vitesses_sur_graphe(donnees_vitesse, referentiel_geo, edges_gdf, donn
             
             print(f"✓ Vitesses réelles mappées sur {vitesses_par_arete['edge_id'].nunique()} arêtes")
             
-            # enrichir sytadin si dispo
+       
             if donnees_sytadin is not None:
                 vitesses_par_arete = enrichir_avec_sytadin(vitesses_par_arete, donnees_sytadin, edges_gdf)
             
             return vitesses_par_arete
     
-    # sinon synthetique
+ 
     print("  Génération de données synthétiques réalistes...")
     return generer_donnees_synthetiques_realistes(edges_gdf)
 
@@ -587,7 +556,7 @@ def generer_donnees_synthetiques_realistes(edges_gdf):
     for _, edge in edges_sample.iterrows():
         for heure in range(24):
             for jour in range(7):
-                # vitesse base selon type
+            
                 highway_type = edge.get('highway', 'unclassified')
                 
                 if highway_type in ['motorway', 'motorway_link']:
@@ -605,25 +574,25 @@ def generer_donnees_synthetiques_realistes(edges_gdf):
                 else:
                     vitesse_base = 25
                 
-                # facteur heure pointe
-                if jour < 5:  # semaine
-                    if heure in [7, 8, 9]:  # matin
+              
+                if jour < 5:  
+                    if heure in [7, 8, 9]:  
                         facteur = 0.4 + 0.2 * np.random.random()
-                    elif heure in [17, 18, 19]:  # soir
+                    elif heure in [17, 18, 19]:  
                         facteur = 0.35 + 0.15 * np.random.random()
-                    elif heure in [12, 13]:  # midi
+                    elif heure in [12, 13]:  
                         facteur = 0.6 + 0.1 * np.random.random()
-                    elif heure in [0, 1, 2, 3, 4, 5]:  # nuit
+                    elif heure in [0, 1, 2, 3, 4, 5]:
                         facteur = 0.9 + 0.1 * np.random.random()
                     else:
                         facteur = 0.7 + 0.2 * np.random.random()
-                else:  # weekend
+                else: 
                     if heure in [11, 12, 13, 14, 15, 16]:
                         facteur = 0.6 + 0.2 * np.random.random()
                     else:
                         facteur = 0.8 + 0.15 * np.random.random()
                 
-                # calcul vitesse avec variation
+                
                 vitesse = vitesse_base * facteur
                 vitesse += np.random.normal(0, 3)
                 vitesse = max(5, min(vitesse, vitesse_base * 1.1))
@@ -637,7 +606,7 @@ def generer_donnees_synthetiques_realistes(edges_gdf):
     
     df_synthetique = pd.DataFrame(vitesses_synthetiques)
     
-    # agreg
+ 
     vitesses_par_arete = (
         df_synthetique
         .groupby(['edge_id', 'heure', 'jour_semaine'])['vitesse_kmh']
@@ -657,11 +626,11 @@ def enrichir_avec_sytadin(vitesses_par_arete, donnees_sytadin, edges_gdf):
     """enrichi avec info sytadin"""
     print("  → Enrichissement avec données Sytadin...")
     
-    # convert sytadin en points pour match
+  
     sytadin_points = donnees_sytadin.copy()
     sytadin_points['geometry'] = sytadin_points.geometry.centroid
     
-    # join avec edges
+  
     edges_simple = edges_gdf[['edge_id', 'geometry']].copy()
     
     correspondances_sytadin = gpd.sjoin_nearest(
@@ -671,10 +640,10 @@ def enrichir_avec_sytadin(vitesses_par_arete, donnees_sytadin, edges_gdf):
         max_distance=0.001
     )
     
-    # appliquer facteurs correction
+   
     for _, row in correspondances_sytadin.iterrows():
         if pd.notna(row['vitesse_kmh']) and pd.notna(row['edge_id']):
-            # ratio sytadin aux vitesses histo
+          
             mask = vitesses_par_arete['edge_id'] == row['edge_id']
             if mask.any():
                 facteur_correction = 0.8  # poids sytadin
@@ -686,30 +655,27 @@ def enrichir_avec_sytadin(vitesses_par_arete, donnees_sytadin, edges_gdf):
     print(f"  ✓ {len(correspondances_sytadin)} correspondances Sytadin appliquées")
     return vitesses_par_arete
 
-# ========================================
-# FEATURES
-# ========================================
 
 def creer_features_temporelles(df):
     """ajout feat temporelles"""
-    # basic
+   
     df['heure_pointe_matin'] = ((df['heure'] >= 7) & (df['heure'] <= 9)).astype(int)
     df['heure_pointe_soir'] = ((df['heure'] >= 17) & (df['heure'] <= 19)).astype(int)
     df['est_weekend'] = (df['jour_semaine'] >= 5).astype(int)
     
-    # cycliques
+
     df['heure_sin'] = np.sin(2 * np.pi * df['heure'] / 24)
     df['heure_cos'] = np.cos(2 * np.pi * df['heure'] / 24)
     df['jour_sin'] = np.sin(2 * np.pi * df['jour_semaine'] / 7)
     df['jour_cos'] = np.cos(2 * np.pi * df['jour_semaine'] / 7)
     
-    # avancees
+   
     if 'minute' in df.columns:
         df['minute_jour'] = df['heure'] * 60 + df['minute']
     else:
         df['minute_jour'] = df['heure'] * 60
     
-    # periodes journee
+ 
     df['periode_nuit'] = ((df['heure'] >= 0) & (df['heure'] < 6)).astype(int)
     df['periode_matin'] = ((df['heure'] >= 6) & (df['heure'] < 12)).astype(int)
     df['periode_apres_midi'] = ((df['heure'] >= 12) & (df['heure'] < 18)).astype(int)
@@ -723,46 +689,44 @@ def creer_features_route(edges_gdf):
     features['edge_id'] = edges_gdf['edge_id']
     features['longueur'] = edges_gdf['length']
     
-    # clean lanes
+
     features['nombre_voies'] = edges_gdf['lanes'].apply(parse_lanes)
     
-    # types route granulaire
+  
     features['route_autoroute'] = edges_gdf['highway'].isin(['motorway', 'motorway_link']).astype(int)
     features['route_principale'] = edges_gdf['highway'].isin(['primary', 'trunk']).astype(int)
     features['route_secondaire'] = edges_gdf['highway'].isin(['secondary', 'tertiary']).astype(int)
     features['route_residentielle'] = edges_gdf['highway'].isin(['residential']).astype(int)
     features['route_service'] = edges_gdf['highway'].isin(['service', 'living_street']).astype(int)
     
-    # vitesse max
+  
     features['vitesse_max'] = edges_gdf['maxspeed'].apply(extraire_vitesse_max)
     
-    # feat geometriques
+   
     features['est_sens_unique'] = edges_gdf['oneway'].apply(detect_oneway)
     features['a_pont'] = edges_gdf['bridge'].apply(to_bool_int)
     features['a_tunnel'] = edges_gdf['tunnel'].apply(to_bool_int)
     
     return features
 
-# ========================================
-# TRAINING
-# ========================================
+
 
 def entrainer_modele_ameliore(vitesses_par_arete, features_routes):
     """entrainement ensemble optimise"""
     print("\n[5/6] Entraînement du modèle de prédiction amélioré...")
     
-    # merge data
+   
     donnees = vitesses_par_arete.merge(features_routes, on='edge_id', how='inner')
     
-    # feat temporelles
+  
     donnees = creer_features_temporelles(donnees)
     
-    # interactions
+ 
     donnees['heure_x_type_route'] = donnees['heure'] * donnees['route_principale']
     donnees['weekend_x_longueur'] = donnees['est_weekend'] * donnees['longueur']
     donnees['voies_x_vitesse_max'] = donnees['nombre_voies'] * donnees['vitesse_max']
     
-    # colonnes features
+
     colonnes_features = [
         'longueur', 'nombre_voies', 'vitesse_max',
         'route_autoroute', 'route_principale', 'route_secondaire', 
@@ -775,32 +739,32 @@ def entrainer_modele_ameliore(vitesses_par_arete, features_routes):
         'heure_x_type_route', 'weekend_x_longueur', 'voies_x_vitesse_max'
     ]
     
-    # filtrer colonnes existantes
+ 
     colonnes_features = [col for col in colonnes_features if col in donnees.columns]
     
     X = donnees[colonnes_features]
     y = donnees['vitesse_moyenne']
     
-    # split stratifie
+  
     X['stratify_key'] = donnees['heure'].astype(str) + '_' + donnees['jour_semaine'].astype(str)
     
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=X['stratify_key']
     )
     
-    # retirer cle stratif
+  
     X_train = X_train.drop('stratify_key', axis=1)
     X_test = X_test.drop('stratify_key', axis=1)
     
-    # normalisation
+
     scaler = StandardScaler()
     X_train_norm = scaler.fit_transform(X_train)
     X_test_norm = scaler.transform(X_test)
     
-    # MODELE ENSEMBLE
+ 
     print("  → Construction du modèle ensemble...")
     
-    # xgb optimise
+ 
     xgb_model = XGBRegressor(
         n_estimators=300,
         max_depth=8,
@@ -815,7 +779,7 @@ def entrainer_modele_ameliore(vitesses_par_arete, features_routes):
         n_jobs=-1
     )
     
-    # gradient boost
+   
     gb_model = GradientBoostingRegressor(
         n_estimators=200,
         max_depth=6,
@@ -826,7 +790,7 @@ def entrainer_modele_ameliore(vitesses_par_arete, features_routes):
         random_state=42
     )
     
-    # random forest
+ 
     rf_model = RandomForestRegressor(
         n_estimators=200,
         max_depth=10,
@@ -836,7 +800,7 @@ def entrainer_modele_ameliore(vitesses_par_arete, features_routes):
         n_jobs=-1
     )
     
-    # ensemble pondere
+  
     ensemble = VotingRegressor(
         estimators=[
             ('xgb', xgb_model),
@@ -846,11 +810,11 @@ def entrainer_modele_ameliore(vitesses_par_arete, features_routes):
         weights=[0.5, 0.3, 0.2]
     )
     
-    # train
+   
     print("  → Entraînement en cours...")
     ensemble.fit(X_train_norm, y_train)
     
-    # eval
+ 
     predictions = ensemble.predict(X_test_norm)
     mae = mean_absolute_error(y_test, predictions)
     rmse = np.sqrt(mean_squared_error(y_test, predictions))
@@ -861,29 +825,29 @@ def entrainer_modele_ameliore(vitesses_par_arete, features_routes):
     print(f"  RMSE: {rmse:.2f} km/h")
     print(f"  R²: {r2:.3f}")
     
-    # CALIBRATION
+   
     print("\n  → Calibration du modèle...")
     calibrateur = IsotonicRegression(out_of_bounds='clip')
     calibrateur.fit(predictions, y_test)
     
-    # test calib
+  
     predictions_cal = calibrateur.transform(predictions)
     mae_cal = mean_absolute_error(y_test, predictions_cal)
     print(f"  MAE après calibration: {mae_cal:.2f} km/h")
     
-    # fonction pred calibree
+  
     def predire_calibre(X_norm, heure=None):
         pred = ensemble.predict(X_norm)
         pred_cal = calibrateur.transform(pred)
         
-        # ajust heure pointe
+       
         if heure is not None:
             if heure in [7,8,9,17,18,19]:
                 pred_cal *= 0.85
         
         return pred_cal
     
-    # analyse feat importantes
+   
     print("\n Features les plus importantes:")
     importances = []
     for name, model in ensemble.estimators:
@@ -914,28 +878,24 @@ def entrainer_modele_ameliore(vitesses_par_arete, features_routes):
         }
     }
 
-# ========================================
-# GRAPHE TEMPOREL
-# ========================================
 
 class CacheGrapheTemporelAvance:
-    """cache avance avec feat calculees"""
     
     def __init__(self):
         self.cache_features_statiques = None
-        self.cache_features_routes = {}  # par type route
+        self.cache_features_routes = {} 
         self.derniere_extraction = None
     
     def get_features_statiques(self, G):
         """recup ou calcul feat statiques"""
-    # si cache existe et graphe pas change
+   
         if self.cache_features_statiques is not None and len(G.edges()) == self.derniere_extraction:
             print("  → Utilisation du cache des features statiques ✓")
             return self.cache_features_statiques.copy()
     
         print("  → Mise en cache des features statiques...")
     
-    # extraction une fois
+  
         edges_data = []
         for u, v, data in G.edges(data=True):
             edges_data.append({
@@ -958,7 +918,7 @@ class CacheGrapheTemporelAvance:
     
     def _calculer_features_temporelles(self, df_edges, heure, jour_semaine):
         """calc feat temp depuis statiques"""
-        # creation feat
+ 
         df_features = pd.DataFrame({
             'longueur': df_edges['length'],
             'nombre_voies': df_edges['lanes'],
@@ -976,10 +936,10 @@ class CacheGrapheTemporelAvance:
             'a_tunnel': df_edges['tunnel'].apply(to_bool_int)
         })
         
-        # ajout feat temp
+       
         df_features = creer_features_temporelles(df_features)
         
-        # interactions
+     
         df_features['heure_x_type_route'] = df_features['heure'] * df_features['route_principale']
         df_features['weekend_x_longueur'] = df_features['est_weekend'] * df_features['longueur']
         df_features['voies_x_vitesse_max'] = df_features['nombre_voies'] * df_features['vitesse_max']
@@ -989,21 +949,21 @@ class CacheGrapheTemporelAvance:
     def get_features_completes(self, G, heure, jour_semaine):
         """recup feat completes avec cache"""
         
-        # cle cache pour heure/jour
+   
         cache_key = (heure, jour_semaine)
         
-        # si deja calcule
+  
         if cache_key in self.cache_features_routes:
             print(f"  → Cache hit pour {heure}h jour {jour_semaine} ✓")
             return self.cache_features_routes[cache_key].copy(), self.cache_features_statiques.copy()
         
-        # sinon calcul
+       
         df_edges = self.get_features_statiques(G)
         
-        # feat temp une fois
+      
         df_features = self._calculer_features_temporelles(df_edges, heure, jour_semaine)
         
-        # cache (garder 10 dernieres heures)
+      
         self.cache_features_routes[cache_key] = df_features
         if len(self.cache_features_routes) > 10:
             # suppr plus ancienne
@@ -1012,7 +972,7 @@ class CacheGrapheTemporelAvance:
         
         return df_features, df_edges
 
-# instance globale cache
+
 cache_graphe_avance = CacheGrapheTemporelAvance()
 
 def construire_graphe_temporel_ameliore(G, modele_dict, features_routes, heure, jour_semaine):
@@ -1027,7 +987,7 @@ def construire_graphe_temporel_ameliore(G, modele_dict, features_routes, heure, 
     calibrateur = modele_dict['calibrateur']
     colonnes = modele_dict['colonnes']
     
-    # 1. extraction data
+   
     edges_data = []
     for u, v, data in G.edges(data=True):
         edges_data.append({
@@ -1046,7 +1006,7 @@ def construire_graphe_temporel_ameliore(G, modele_dict, features_routes, heure, 
     n_edges = len(df_edges)
     print(f"  → Traitement vectorisé de {n_edges} arêtes...")
     
-    # 2. creation feat vectorisee
+  
     df_features = pd.DataFrame({
         'longueur': df_edges['length'],
         'nombre_voies': df_edges['lanes'].apply(parse_lanes),
@@ -1064,33 +1024,33 @@ def construire_graphe_temporel_ameliore(G, modele_dict, features_routes, heure, 
         'a_tunnel': df_edges['tunnel'].apply(to_bool_int)
     })
     
-    # 3. feat temporelles
+
     df_features = creer_features_temporelles(df_features)
     
-    # 4. interactions vectorisees
+
     df_features['heure_x_type_route'] = df_features['heure'] * df_features['route_principale']
     df_features['weekend_x_longueur'] = df_features['est_weekend'] * df_features['longueur']
     df_features['voies_x_vitesse_max'] = df_features['nombre_voies'] * df_features['vitesse_max']
     
-    # 5. prep matrice sklearn
+  
     X = df_features[colonnes].values
     
-    # 6. prediction vectorisee
+
     print("  → Prédiction vectorisée...")
     X_norm = scaler.transform(X)
     vitesses_predites = modele.predict(X_norm)
     
-    # calib vectorisee
+  
     vitesses_calibrees = calibrateur.transform(vitesses_predites)
     if heure in [7, 8, 9, 17, 18, 19]:
         vitesses_calibrees *= 0.85
     
     vitesses_calibrees = np.maximum(vitesses_calibrees, 5)
     
-    # 7. calcul temps vectorise
+ 
     temps_minutes = (df_edges['length'].values / 1000) / vitesses_calibrees * 60
     
-    # 8. construction graphe batch
+  
     print("  → Construction du graphe...")
     graphe_temps = nx.DiGraph()
     
@@ -1104,26 +1064,24 @@ def construire_graphe_temporel_ameliore(G, modele_dict, features_routes, heure, 
         for i in range(n_edges)
     ]
     
-    graphe_temps.add_edges_from(edges_list)  # batch add
+    graphe_temps.add_edges_from(edges_list)  
     
     elapsed = time.time() - start_time
     print(f"✓ Graphe temporel construit en {elapsed:.2f} secondes")
     
     return graphe_temps
 
-# ========================================
-# PREDICTION TRAJET
-# ========================================
+
 
 def predire_trajet_ameliore(adresse_depart, adresse_destination, heure_depart, 
                            G, modele_dict, features_routes, nodes_gdf):
-    """pred temps trajet entre 2 adresses"""
+  
     
     print("\n" + "="*60)
     print(" PRÉDICTION DE TRAJET AMÉLIORÉE")
     print("="*60)
     
-    # geocode adresses IDF
+   
     print("\n Géocodage des adresses...")
     coords_depart = geocoder_adresse_idf(adresse_depart)
     coords_destination = geocoder_adresse_idf(adresse_destination)
@@ -1136,33 +1094,33 @@ def predire_trajet_ameliore(adresse_depart, adresse_destination, heure_depart,
     print(f"  Destination: {adresse_destination}")
     print(f"  → Coordonnées: {coords_destination[0]:.4f}, {coords_destination[1]:.4f}")
     
-    # distance vol oiseau
+  
     distance_directe = calcul_distance_haversine(
         coords_depart[0], coords_depart[1],
         coords_destination[0], coords_destination[1]
     )
     print(f"  Distance à vol d'oiseau: {distance_directe:.1f} km")
     
-    # noeuds proches
+   
     noeud_depart = ox.nearest_nodes(G, coords_depart[1], coords_depart[0])
     noeud_destination = ox.nearest_nodes(G, coords_destination[1], coords_destination[0])
     
-    # extract jour/heure
+   
     jour_semaine = heure_depart.weekday()
     heure = heure_depart.hour
     
-    # graphe avec temps
+   
     graphe_temps = construire_graphe_temporel_ameliore(
         G, modele_dict, features_routes, heure, jour_semaine
     )
     
     try:
-        # chemin rapide
+
         chemin_rapide = nx.shortest_path(
             graphe_temps, noeud_depart, noeud_destination, weight='temps'
         )
         
-        # stats detaillees
+      
         temps_total = 0
         distance_totale = 0
         vitesses = []
@@ -1186,11 +1144,11 @@ def predire_trajet_ameliore(adresse_depart, adresse_destination, heure_depart,
                 'type_route': edge.get('type_route', 'unknown')
             })
         
-        # marge parking/imprevus
+     
         temps_parking = np.random.uniform(2, 5)
         temps_total += temps_parking
         
-        # resultats
+   
         print(f"\nRÉSULTATS DE LA PRÉDICTION:")
         print(f"Heure de départ: {heure_depart.strftime('%A %d/%m/%Y à %H:%M')}")
         print(f"Temps estimé: {temps_total:.0f} minutes (dont {temps_parking:.0f} min parking)")
@@ -1199,13 +1157,13 @@ def predire_trajet_ameliore(adresse_depart, adresse_destination, heure_depart,
         print(f"Nombre d'intersections: {len(chemin_rapide)-1}")
         print(f"Ratio distance réelle/directe: {(distance_totale/1000)/distance_directe:.2f}")
         
-        # analyse trafic
+      
         if heure in [7,8,9,17,18,19] and jour_semaine < 5:
             print(f"\n  HEURE DE POINTE détectée")
             print(f"  → Temps en conditions normales estimé: ~{temps_total*0.6:.0f} minutes")
             print(f"  → Ralentissement: +{((temps_total/(temps_total*0.6))-1)*100:.0f}%")
         
-        # top 3 segments lents
+    
         segments_lents = sorted(segments, key=lambda x: x['vitesse_kmh'])[:3]
         print(f"\n Segments les plus lents:")
         for seg in segments_lents:
@@ -1233,13 +1191,8 @@ def predire_trajet_ameliore(adresse_depart, adresse_destination, heure_depart,
         print(f"\n Erreur lors du calcul: {e}")
         return None
 
-# ========================================
-# CARTE INTERACTIVE
-# ========================================
+
 def generer_itineraire_interactif(resultat_prediction, G, nodes_gdf):
-    """
-    genere carte interactive avec itineraire
-    """
     
     if not resultat_prediction or 'chemin' not in resultat_prediction:
         print(" Pas d'itinéraire à afficher")
@@ -1247,20 +1200,20 @@ def generer_itineraire_interactif(resultat_prediction, G, nodes_gdf):
     
     chemin_nodes = resultat_prediction['chemin']
     
-    # 1. EXTRACTION COORDS ET ETAPES
+  
     def extraire_etapes_itineraire(chemin_nodes, G, nodes_gdf):
-        """extrait coords et noms rues"""
+    
         
         etapes = []
         coordonnees = []
         
         for i, node in enumerate(chemin_nodes):
-            # coords noeud
+          
             node_data = nodes_gdf.loc[node]
             lat, lon = node_data['y'], node_data['x']
             coordonnees.append([lat, lon])
             
-            # nom rue si dispo
+        
             if i < len(chemin_nodes) - 1:
                 next_node = chemin_nodes[i + 1]
                 edge_data = G.get_edge_data(node, next_node)
@@ -1270,7 +1223,7 @@ def generer_itineraire_interactif(resultat_prediction, G, nodes_gdf):
                     if isinstance(nom_rue, list):
                         nom_rue = nom_rue[0]
                     
-                    # ajout etape si nouvelle rue
+                   
                     if not etapes or etapes[-1]['rue'] != nom_rue:
                         etapes.append({
                             'numero': len(etapes) + 1,
@@ -1281,7 +1234,7 @@ def generer_itineraire_interactif(resultat_prediction, G, nodes_gdf):
                             'distance_cumul': 0
                         })
         
-        # ajout destination
+      
         if coordonnees:
             etapes.append({
                 'numero': len(etapes) + 1,
@@ -1294,22 +1247,22 @@ def generer_itineraire_interactif(resultat_prediction, G, nodes_gdf):
         
         return coordonnees, etapes
     
-    # 2. CREATION CARTE FOLIUM
+  
     def creer_carte_itineraire(coordonnees, etapes, resultat):
         """cree carte folium"""
         
-        # centrage
+       
         lat_centre = np.mean([c[0] for c in coordonnees])
         lon_centre = np.mean([c[1] for c in coordonnees])
         
-        # init carte
+       
         carte = folium.Map(
             location=[lat_centre, lon_centre],
             zoom_start=13,
             tiles='OpenStreetMap'
         )
         
-        # trace itineraire
+      
         folium.PolyLine(
             coordonnees,
             color='blue',
@@ -1319,7 +1272,7 @@ def generer_itineraire_interactif(resultat_prediction, G, nodes_gdf):
 
             ).add_to(carte)
         
-        # Marqueur de départ
+   
         folium.Marker(
             coordonnees[0],
             popup=folium.Popup(
@@ -1329,7 +1282,7 @@ def generer_itineraire_interactif(resultat_prediction, G, nodes_gdf):
             icon=folium.Icon(color='green', icon='play')
         ).add_to(carte)
         
-        # Marqueur d'arrivée
+      
         folium.Marker(
             coordonnees[-1],
             popup=folium.Popup(
@@ -1339,9 +1292,9 @@ def generer_itineraire_interactif(resultat_prediction, G, nodes_gdf):
             icon=folium.Icon(color='red', icon='stop')
         ).add_to(carte)
         
-        # Ajouter les étapes principales
+  
         for i, etape in enumerate(etapes[1:-1], 1):
-            if i % 3 == 0:  # Afficher 1 étape sur 3 pour ne pas surcharger
+            if i % 3 == 0:  
                 folium.CircleMarker(
                     [etape['lat'], etape['lon']],
                     radius=5,
@@ -1350,7 +1303,7 @@ def generer_itineraire_interactif(resultat_prediction, G, nodes_gdf):
                     fill=True
                 ).add_to(carte)
         
-        # Ajouter panneau de contrôle avec infos
+       
         info_html = f"""
         <div style='position: fixed; 
                     top: 10px; right: 10px; 
@@ -1370,21 +1323,21 @@ def generer_itineraire_interactif(resultat_prediction, G, nodes_gdf):
         """
         carte.get_root().html.add_child(folium.Element(info_html))
         
-        # Plugin pour mesurer les distances
+  
         plugins.MeasureControl().add_to(carte)
         
-        # Plugin fullscreen
+     
         plugins.Fullscreen().add_to(carte)
         
-        # Ajouter une mini-carte
+    
         minimap = plugins.MiniMap(toggle_display=True)
         carte.add_child(minimap)
         
         return carte
     
-    # 3. generation feuille de route
+   
     def generer_feuille_route(etapes, resultat):
-        """cree feuille de route detaillee"""
+      
         
         feuille_route = []
         feuille_route.append("=" * 60)
@@ -1402,7 +1355,7 @@ def generer_itineraire_interactif(resultat_prediction, G, nodes_gdf):
             elif i == len(etapes) - 1:
                 feuille_route.append(f" ARRIVÉE: Vous êtes arrivé à destination")
             else:
-                # Calculer la distance depuis la dernière étape
+               
                 if i > 0:
                     dist_etape = calcul_distance_etape(
                         etapes[i-1]['lat'], etapes[i-1]['lon'],
@@ -1410,7 +1363,7 @@ def generer_itineraire_interactif(resultat_prediction, G, nodes_gdf):
                     )
                     distance_cumul += dist_etape
                     
-                    # Déterminer le type de direction
+              
                     direction = determiner_direction(etapes[i-1], etape)
                     
                     feuille_route.append(
@@ -1421,35 +1374,34 @@ def generer_itineraire_interactif(resultat_prediction, G, nodes_gdf):
         feuille_route.append("=" * 60)
         return "\n".join(feuille_route)
     
-    # 4. export et partage
+
     def exporter_itineraire(carte, etapes, resultat):
         """export l'itineraire dans differents formats"""
         
-        # save carte HTML
+   
         carte.save('itineraire_idf.html')
         print("✓ Carte sauvegardée dans 'itineraire_idf.html'")
         
-        # export en GPX pour GPS
+     
         gpx_content = generer_gpx(etapes, resultat)
         with open('itineraire.gpx', 'w') as f:
             f.write(gpx_content)
         print("✓ Fichier GPX sauvegardé dans 'itineraire.gpx'")
     
-    # 5. fonction principale affichage
-    # extract data
+
     coordonnees, etapes = extraire_etapes_itineraire(chemin_nodes, G, nodes_gdf)
     
-    # cree carte
+
     carte = creer_carte_itineraire(coordonnees, etapes, resultat_prediction)
     
-    # genere feuille route
+ 
     feuille_route = generer_feuille_route(etapes, resultat_prediction)
     print(feuille_route)
     
-    # export
+
     exporter_itineraire(carte, etapes, resultat_prediction)
     
-    # affiche carte dans jupyter (si applicable)
+  
     try:
         from IPython.display import display
         display(carte)
@@ -1462,13 +1414,10 @@ def generer_itineraire_interactif(resultat_prediction, G, nodes_gdf):
         'feuille_route': feuille_route
     }
 
-# fonctions utilitaires supplementaires
+
 def calcul_distance_haversine(lat1, lon1, lat2, lon2):
-    """
-    calcul distance vol d'oiseau entre 2 points (km)
-    avec formule haversine
-    """
-    R = 6371  # rayon terre km
+
+    R = 6371 
     phi1, phi2 = radians(lat1), radians(lat2)
     dphi = radians(lat2 - lat1)
     dlambda = radians(lon2 - lon1)
@@ -1476,10 +1425,10 @@ def calcul_distance_haversine(lat1, lon1, lat2, lon2):
     return 2 * R * atan2(sqrt(a), sqrt(1 - a))
 
 def calcul_distance_etape(lat1, lon1, lat2, lon2):
-    """calc distance entre 2 points GPS"""
+  
     from math import radians, sin, cos, sqrt, atan2
     
-    R = 6371  # rayon terre km
+    R = 6371  
     
     lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
     dlat = lat2 - lat1
@@ -1491,8 +1440,7 @@ def calcul_distance_etape(lat1, lon1, lat2, lon2):
     return R * c
 
 def determiner_direction(etape_avant, etape_apres):
-    """determine direction a prendre"""
-    # calc simplifie angle
+  
     dx = etape_apres['lon'] - etape_avant['lon']
     dy = etape_apres['lat'] - etape_avant['lat']
     
@@ -1508,7 +1456,7 @@ def determiner_direction(etape_avant, etape_apres):
         return "↓ Faire demi-tour sur"
 
 def generer_gpx(etapes, resultat):
-    """genere fichier GPX pour nav GPS"""
+   
     gpx_template = """<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="Traffic Predictor IDF">
   <metadata>
@@ -1538,23 +1486,23 @@ def generer_gpx(etapes, resultat):
         waypoints="\n".join(waypoints)
     )
 
-# integration dans fonction principale de prediction
+
 def predire_trajet_avec_carte(adresse_depart, adresse_destination, 
                              heure_depart, G, modele, scaler, 
                              features_routes, nodes_gdf):
-    """version amelioree avec generation carte"""
+  
     
-    # prediction standard
+
     resultat = predire_trajet_ameliore(
         adresse_depart, adresse_destination, heure_depart,
         G, modele, scaler, features_routes,nodes_gdf
     )
     
     if resultat:
-        # generer itineraire interactif
+    
         itineraire = generer_itineraire_interactif(resultat, G, nodes_gdf)
         
-        # ajouter au resultat
+    
         resultat['itineraire'] = itineraire
         
         print("\n Itinéraire généré avec succès!")
@@ -1563,15 +1511,13 @@ def predire_trajet_avec_carte(adresse_depart, adresse_destination,
     
     return resultat
 
-# ========================================
-# FONCTIONS SAUVEGARDE ET CHARGEMENT
-# ========================================
+
 
 def sauvegarder_modele(modele_dict, nom_fichier='modele_trafic_idf.pkl'):
-    """save modele et composants"""
+   
     print(f"\n Sauvegarde du modèle dans '{nom_fichier}'...")
     
-    # creer dict simplifie pour save
+ 
     modele_save = {
         'modele': modele_dict['modele'],
         'scaler': modele_dict['scaler'],
@@ -1586,13 +1532,13 @@ def sauvegarder_modele(modele_dict, nom_fichier='modele_trafic_idf.pkl'):
     print(f"  Performance: MAE={modele_save['performance']['mae']:.2f} km/h")
     
 def charger_modele(nom_fichier='modele_trafic_idf.pkl'):
-    """charge modele pre-entraine"""
+ 
     print(f"\n Chargement du modèle depuis '{nom_fichier}'...")
     
     try:
         modele_save = joblib.load(nom_fichier)
         
-        # recreer fonction pred calibree
+    
         def predire_calibre(X_norm, heure=None):
             pred = modele_save['modele'].predict(X_norm)
             pred_cal = modele_save['calibrateur'].transform(pred)
@@ -1625,12 +1571,10 @@ def charger_modele(nom_fichier='modele_trafic_idf.pkl'):
         print(f" Erreur lors du chargement: {e}")
         return None
 
-# ========================================
-# ANALYSEUR TRAFIC TEMPS REEL
-# ========================================
+
 
 class AnalyseurTraficTempsReel:
-    """classe pour analyser trafic temps reel"""
+  
     
     def __init__(self, modele_dict, G, features_routes):
         self.modele_dict = modele_dict
@@ -1639,7 +1583,7 @@ class AnalyseurTraficTempsReel:
         self.historique_predictions = []
         
     def analyser_conditions_actuelles(self):
-        """analyse conditions trafic actuelles"""
+  
         maintenant = datetime.now()
         heure = maintenant.hour
         jour = maintenant.weekday()
@@ -1664,7 +1608,7 @@ class AnalyseurTraficTempsReel:
                 stats_par_type[type_route] = []
             stats_par_type[type_route].append(vitesse)
         
-        # afficher stats
+      
         print("\n Vitesses moyennes par type de route:")
         for type_route, vitesses in sorted(stats_par_type.items()):
             if vitesses:
@@ -1672,7 +1616,7 @@ class AnalyseurTraficTempsReel:
                 vitesse_min = np.min(vitesses)
                 vitesse_max = np.max(vitesses)
                 
-                # determiner etat trafic
+           
                 if type_route in ['motorway', 'trunk']:
                     if vitesse_moy < 50:
                         etat = " Très chargé"
@@ -1690,13 +1634,13 @@ class AnalyseurTraficTempsReel:
                 
                 print(f"  {type_route:20s}: {vitesse_moy:5.1f} km/h [{vitesse_min:.0f}-{vitesse_max:.0f}] {etat}")
         
-        # identifier zones congestionnees
+     
         self.identifier_zones_congestionnees(graphe_temps)
         
         return graphe_temps
     
     def identifier_zones_congestionnees(self, graphe_temps, seuil_congestion=20):
-        """identifie zones avec vitesse < seuil"""
+      
         zones_lentes = []
         
         for u, v, data in graphe_temps.edges(data=True):
@@ -1709,7 +1653,7 @@ class AnalyseurTraficTempsReel:
         
         if zones_lentes:
             print(f"\n  {len(zones_lentes)} zones congestionnées détectées (< {seuil_congestion} km/h)")
-            # afficher 5 pires
+        
             zones_lentes.sort(key=lambda x: x['vitesse'])
             for i, zone in enumerate(zones_lentes[:5]):
                 print(f"   {i+1}. {zone['type']:15s} - {zone['vitesse']:.1f} km/h")
@@ -1717,7 +1661,7 @@ class AnalyseurTraficTempsReel:
             print("\n Aucune zone fortement congestionnée")
     
     def predire_evolution_trafic(self, heures_futures=3):
-        """predit evolution trafic pour prochaines heures"""
+       
         print(f"\n PRÉVISION DU TRAFIC ({heures_futures}h)")
         print("="*50)
         
@@ -1729,7 +1673,7 @@ class AnalyseurTraficTempsReel:
             heure = heure_future.hour
             jour = heure_future.weekday()
             
-            # calc vitesse moy globale
+        
             graphe_temps = construire_graphe_temporel_ameliore(
                 self.G, self.modele_dict, self.features_routes, heure, jour
             )
@@ -1740,23 +1684,23 @@ class AnalyseurTraficTempsReel:
             previsions.append({
                 'heure': heure_future,
                 'vitesse_moyenne': vitesse_moy,
-                'congestion': 100 - (vitesse_moy / 50 * 100)  # indice congestion
+                'congestion': 100 - (vitesse_moy / 50 * 100) 
             })
             
             print(f"  {heure_future.strftime('%H:%M')} - "
                   f"Vitesse moy: {vitesse_moy:.1f} km/h - "
                   f"Congestion: {previsions[-1]['congestion']:.0f}%")
         
-        # recommandations
+    
         self.generer_recommandations(previsions)
         
         return previsions
     
     def generer_recommandations(self, previsions):
-        """genere recommandations basees sur previsions"""
+      
         print("\n RECOMMANDATIONS:")
         
-        # trouver meilleure heure
+      
         meilleure_heure = max(previsions, key=lambda x: x['vitesse_moyenne'])
         pire_heure = min(previsions, key=lambda x: x['vitesse_moyenne'])
         
@@ -1764,7 +1708,7 @@ class AnalyseurTraficTempsReel:
             print(f"  ✓ Privilégiez un départ vers {meilleure_heure['heure'].strftime('%H:%M')}")
             print(f"  ✗ Évitez de partir vers {pire_heure['heure'].strftime('%H:%M')}")
         
-        # analyse tendance
+     
         if len(previsions) > 1:
             tendance = previsions[-1]['congestion'] - previsions[0]['congestion']
             if tendance > 10:
@@ -1774,12 +1718,9 @@ class AnalyseurTraficTempsReel:
             else:
                 print("  → Conditions stables prévues")
 
-# ========================================
-# INTERFACE UTILISATEUR INTERACTIVE
-# ========================================
 
 def interface_interactive(G, modele_dict, features_routes, nodes_gdf):
-    """interface ligne de commande pour utiliser systeme"""
+   
     
     print("\n" + "="*60)
     print(" SYSTÈME DE PRÉDICTION DE TRAFIC ÎLE-DE-FRANCE")
@@ -1799,14 +1740,14 @@ def interface_interactive(G, modele_dict, features_routes, nodes_gdf):
         choix = input("\nVotre choix (1-6): ")
         
         if choix == "1":
-            # prediction trajet
+           
             print("\n  PRÉDICTION DE TRAJET")
             print("-"*40)
             
             adresse_depart = input("Adresse de départ (en Île-de-France): ")
             adresse_destination = input("Adresse de destination (en Île-de-France): ")
             
-            # choix heure
+         
             print("\nQuand souhaitez-vous partir?")
             print("1. Maintenant")
             print("2. À une heure précise")
@@ -1824,18 +1765,18 @@ def interface_interactive(G, modele_dict, features_routes, nodes_gdf):
                     print(" Format incorrect, utilisation de l'heure actuelle")
                     heure_depart = datetime.now()
             
-            # prediction avec carte
+     
             resultat = predire_trajet_ameliore(
                 adresse_depart, adresse_destination, heure_depart,
                 G, modele_dict, features_routes, nodes_gdf
             )
             
             if resultat:
-                # generer carte
+   
                 print("\n  Génération de la carte interactive...")
                 generer_itineraire_interactif(resultat, G, nodes_gdf)
                 
-                # proposer alternatives
+            
                 print("\n Souhaitez-vous voir des itinéraires alternatifs? (o/n)")
                 if input().lower() == 'o':
                     generer_alternatives(
@@ -1844,20 +1785,20 @@ def interface_interactive(G, modele_dict, features_routes, nodes_gdf):
                     )
         
         elif choix == "2":
-            # analyse temps reel
+      
             analyseur.analyser_conditions_actuelles()
         
         elif choix == "3":
-            # previsions
+  
             heures = int(input("\nPrévisions pour combien d'heures? (1-6): "))
             analyseur.predire_evolution_trafic(min(heures, 6))
         
         elif choix == "4":
-            # comparaison itineraires
+     
             comparer_itineraires_multiples(G, modele_dict, features_routes, nodes_gdf)
         
         elif choix == "5":
-            # historique
+      
             afficher_historique_trajets()
         
         elif choix == "6":
@@ -1869,12 +1810,12 @@ def interface_interactive(G, modele_dict, features_routes, nodes_gdf):
 
 def generer_alternatives(adresse_depart, adresse_destination, heure_depart,
                         G, modele_dict, features_routes, nodes_gdf):
-    """genere itineraires alternatifs"""
+  
     print("\n🔄 RECHERCHE D'ITINÉRAIRES ALTERNATIFS...")
     
     alternatives = []
     
-    # alternative 1: depart 30 min plus tot
+
     heure_tot = heure_depart - timedelta(minutes=30)
     res_tot = predire_trajet_ameliore(
         adresse_depart, adresse_destination, heure_tot,
@@ -1883,7 +1824,7 @@ def generer_alternatives(adresse_depart, adresse_destination, heure_depart,
     if res_tot:
         alternatives.append(("Départ 30 min plus tôt", res_tot))
     
-    # alternative 2: depart 30 min plus tard
+  
     heure_tard = heure_depart + timedelta(minutes=30)
     res_tard = predire_trajet_ameliore(
         adresse_depart, adresse_destination, heure_tard,
@@ -1892,15 +1833,14 @@ def generer_alternatives(adresse_depart, adresse_destination, heure_depart,
     if res_tard:
         alternatives.append(("Départ 30 min plus tard", res_tard))
     
-    # afficher comparaison
+  
     if alternatives:
         print("\n COMPARAISON DES ALTERNATIVES:")
         print("-"*60)
         print(f"{'Option':30s} {'Départ':10s} {'Durée':10s} {'Vitesse':10s}")
         print("-"*60)
         
-        # Notez: resultat n'est pas défini ici, il faudrait le passer en paramètre
-        # pour l'instant j'utilise les données de res_tot comme proxy
+        
         print(f"{'Original':30s} {heure_depart.strftime('%H:%M'):10s} "
               f"{'--'} min{' ':5s} "
               f"{'--'} km/h")
@@ -1911,7 +1851,7 @@ def generer_alternatives(adresse_depart, adresse_destination, heure_depart,
                   f"{alt['vitesse_moyenne']:.0f} km/h")
 
 def comparer_itineraires_multiples(G, modele_dict, features_routes, nodes_gdf):
-    """compare plusieurs destinations depuis point depart"""
+  
     print("\n COMPARAISON MULTI-DESTINATIONS")
     print("-"*40)
     
@@ -1943,14 +1883,14 @@ def comparer_itineraires_multiples(G, modele_dict, features_routes, nodes_gdf):
         if res:
             resultats.append((dest, res))
     
-    # afficher tableau comparatif
+
     if resultats:
         print("\n TABLEAU COMPARATIF:")
         print("-"*80)
         print(f"{'Destination':40s} {'Temps':10s} {'Distance':10s} {'Vitesse':10s}")
         print("-"*80)
         
-        # trier par temps
+    
         resultats.sort(key=lambda x: x[1]['temps_minutes'])
         
         for dest, res in resultats:
@@ -1971,75 +1911,72 @@ def afficher_historique_trajets():
     print("  • Analyser vos habitudes de déplacement")
     print("  • Recevoir des suggestions personnalisées")
 
-# ========================================
-# PROGRAMME PRINCIPAL
-# ========================================
 
 def main():
-    """fonction principale du programme"""
+
     
     print("\n" + "="*80)
     print(" " * 20 + " PRÉDICTION DU TRAFIC EN ÎLE-DE-FRANCE ")
-    print(" " * 25 + "PROJET - Machine Learning")
+    
     print("="*80)
     
-    # config
-    print("\n  CONFIGURATION")
+    
+    
     print("-"*40)
     
-    # demander mode
+    
     print("Choisissez le mode d'exécution:")
     print("1. Entraînement complet (recommandé pour première utilisation)")
     print("2. Chargement d'un modèle existant")
-    print("3. Mode démonstration (données synthétiques)")
+   
     
-    mode = input("\nVotre choix (1-3): ")
+    mode = input("\nVotre choix (1-2): ")
     
     try:
-        # etape 1: charger graphe routier
+       
         print("\n  Chargement du réseau routier d'Île-de-France...")
         print("   (Cette opération peut prendre quelques minutes la première fois)")
         
         G, nodes_gdf, edges_gdf = construire_graphe_routier()
         
         if mode == "1":
-            # mode 1: entrainement complet
+          
             print("\n" + "="*60)
             print("MODE ENTRAÎNEMENT COMPLET")
             print("="*60)
             
-            # charger donnees
+         
             print("\n[Phase 1/3] Chargement des données...")
             
-            # donnees comptage
+            
             donnees_comptage = charger_comptages_routiers(nombre_lignes=10000)
             
-            # referentiel geo
+        
             referentiel_geo = charger_referentiel_geographique()
             
-            # donnees sytadin (optionnel)
+           
             donnees_sytadin = charger_donnees_sytadin_enrichies()
            
-           # mapper vitesses
+      
             vitesses_par_arete = mapper_vitesses_sur_graphe(
                donnees_comptage, referentiel_geo, edges_gdf, donnees_sytadin
            )
            
-           # creer features routes
+          
             features_routes = creer_features_route(edges_gdf)
            
-           # entrainer modele
+       
             print("\n[Phase 2/3] Entraînement du modèle...")
             modele_dict = entrainer_modele_ameliore(vitesses_par_arete, features_routes)
            
-           # sauvegarder
+    
             print("\n[Phase 3/3] Sauvegarde...")
             sauvegarder_modele(modele_dict)
            
             print("\n✅ Entraînement terminé avec succès!")
            
         elif mode == "2":
-            # mode 2: chargement modele existant
+         
             print("\n" + "="*60)
             print("MODE CHARGEMENT DE MODÈLE")
             print("="*60)
@@ -2050,38 +1987,20 @@ def main():
                 print("\n  Aucun modèle trouvé, passage en mode démonstration...")
                 mode = "3"
             else:
-                # creer features pour graphe actuel
+              
                 features_routes = creer_features_route(edges_gdf)
                
-        if mode == "3" or (mode == "2" and not modele_dict):
-            # mode 3: demo rapide
-            print("\n" + "="*60)
-            print("MODE DÉMONSTRATION")
-            print("="*60)
-           
-            print("\n  Génération d'un modèle de démonstration...")
-            print("   (Les prédictions seront approximatives)")
-           
-            # creer donnees synthetiques
-            features_routes = creer_features_route(edges_gdf)
-            vitesses_synthetiques = generer_donnees_synthetiques_realistes(edges_gdf)
-           
-            # entrainer modele rapide
-            modele_dict = entrainer_modele_ameliore(vitesses_synthetiques, features_routes)
-           
-            print("\n Modèle de démonstration prêt!")
        
-        # interface interactive
+       
         print("\n" + "="*60)
-        print(" SYSTÈME PRÊT À L'EMPLOI")
-        print("="*60)
+
        
-        # lancer interface
+    
         interface_interactive(G, modele_dict, features_routes, nodes_gdf)
        
     except KeyboardInterrupt:
         print("\n\n  Interruption par l'utilisateur")
-        print(" Au revoir!")
+  
        
     except Exception as e:
         print(f"\n Erreur: {e}")
@@ -2090,17 +2009,17 @@ def main():
         print("  • Vous êtes connecté à Internet")
         print("  • Vous avez suffisamment de mémoire disponible")
        
-        # mode degrade
+      
         print("\n Tentative de lancement en mode dégradé...")
         try:
-            # essayer avec paris uniquement
+        
             print("   → Chargement du graphe de Paris uniquement...")
             G = ox.graph_from_place("Paris, France", network_type="drive")
             nodes_gdf, edges_gdf = ox.graph_to_gdfs(G)
             edges_gdf = edges_gdf.reset_index()
             edges_gdf['edge_id'] = edges_gdf.index
            
-            # donnees minimales
+         
             features_routes = creer_features_route(edges_gdf)
             vitesses_synthetiques = generer_donnees_synthetiques_realistes(edges_gdf.head(500))
             modele_dict = entrainer_modele_ameliore(vitesses_synthetiques, features_routes)
@@ -2112,20 +2031,20 @@ def main():
             print(f"\n Impossible de démarrer: {e2}")
 
 def exemple_utilisation_directe():
-    """exemple utilisation directe sans interface"""
+   
     print("\n EXEMPLE D'UTILISATION DIRECTE")
     print("-"*40)
    
-    # charger composants
+ 
     print("Chargement...")
     G, nodes_gdf, edges_gdf = construire_graphe_routier("Paris, France")
     features_routes = creer_features_route(edges_gdf)
    
-    # modele simple pour demo
+  
     vitesses_synthetiques = generer_donnees_synthetiques_realistes(edges_gdf.head(1000))
     modele_dict = entrainer_modele_ameliore(vitesses_synthetiques, features_routes)
    
-    # exemple prediction
+
     print("\n Exemple de trajet:")
     resultat = predire_trajet_ameliore(
         "Tour Eiffel, Paris",
@@ -2139,12 +2058,10 @@ def exemple_utilisation_directe():
         print(f"   Temps: {resultat['temps_minutes']:.0f} minutes")
         print(f"   Distance: {resultat['distance_km']:.1f} km")
 
-# ========================================
-# POINT D'ENTREE DU PROGRAMME
-# ========================================
+
 
 if __name__ == "__main__":
-    # verifier dependances
+  
     try:
         import osmnx
         import networkx
@@ -2161,5 +2078,5 @@ if __name__ == "__main__":
         print("pip install osmnx networkx pandas numpy geopandas scikit-learn xgboost folium geopy requests joblib tqdm shapely")
         exit(1)
    
-    # lancer programme principal
+
     main()
